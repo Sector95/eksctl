@@ -12,6 +12,11 @@ import (
 )
 
 func (c *ClusterResourceSet) addSubnets(refRT *gfn.Value, topology api.SubnetTopology, subnets map[string]api.Network) {
+	counter := 0
+	if topology == api.SubnetTopologyPrivate {
+		counter = len(c.spec.AvailabilityZones)
+	}
+
 	for az, subnet := range subnets {
 		alias := string(topology) + strings.ToUpper(strings.Join(strings.Split(az, "-"), ""))
 		subnet := &gfn.AWSEC2Subnet{
@@ -19,6 +24,7 @@ func (c *ClusterResourceSet) addSubnets(refRT *gfn.Value, topology api.SubnetTop
 			CidrBlock:        gfn.NewString(subnet.CIDR.String()),
 			VpcId:            c.vpc,
 		}
+
 		switch topology {
 		case api.SubnetTopologyPrivate:
 			subnet.Tags = []gfn.Tag{{
@@ -36,18 +42,39 @@ func (c *ClusterResourceSet) addSubnets(refRT *gfn.Value, topology api.SubnetTop
 			SubnetId:     refSubnet,
 			RouteTableId: refRT,
 		})
+
+		c.newResource(alias+"CIDRv6", &gfn.AWSEC2SubnetCidrBlock{
+			SubnetId:      refSubnet,
+			Ipv6CidrBlock: getCIDRv6(counter),
+		})
+
 		c.subnets[topology] = append(c.subnets[topology], refSubnet)
+		counter++
 	}
+}
+
+var refCIDRv6 = gfn.MakeFnCIDR(
+	gfn.MakeFnSelect(0, gfn.MakeFnGetAttString("VPC.Ipv6CidrBlocks")), 8, 64,
+)
+
+func getCIDRv6(n int) *gfn.Value {
+	return gfn.MakeFnSelect(n, refCIDRv6)
 }
 
 //nolint:interfacer
 func (c *ClusterResourceSet) addResourcesForVPC() {
 	internetCIDR := gfn.NewString("0.0.0.0/0")
+	//internetCIDRv6 := gfn.NewString("::/0")
 
 	c.vpc = c.newResource("VPC", &gfn.AWSEC2VPC{
 		CidrBlock:          gfn.NewString(c.spec.VPC.CIDR.String()),
 		EnableDnsSupport:   gfn.True(),
 		EnableDnsHostnames: gfn.True(),
+	})
+
+	c.newResource("AutomaticCIDRv6", &gfn.AWSEC2VPCCidrBlock{
+		VpcId:                       c.vpc,
+		AmazonProvidedIpv6CidrBlock: gfn.True(),
 	})
 
 	for i, extraCIDR := range c.spec.VPC.ExtraCIDRs {
@@ -76,7 +103,8 @@ func (c *ClusterResourceSet) addResourcesForVPC() {
 	c.newResource("PublicSubnetRoute", &gfn.AWSEC2Route{
 		RouteTableId:         refPublicRT,
 		DestinationCidrBlock: internetCIDR,
-		GatewayId:            refIG,
+		//DestinationIpv6CidrBlock: internetCIDRv6,
+		GatewayId: refIG,
 	})
 
 	c.addSubnets(refPublicRT, api.SubnetTopologyPublic, c.spec.VPC.Subnets.Public)
@@ -98,7 +126,8 @@ func (c *ClusterResourceSet) addResourcesForVPC() {
 	c.newResource("PrivateSubnetRoute", &gfn.AWSEC2Route{
 		RouteTableId:         refPrivateRT,
 		DestinationCidrBlock: internetCIDR,
-		NatGatewayId:         refNG,
+		//DestinationIpv6CidrBlock: internetCIDRv6,
+		NatGatewayId: refNG,
 	})
 
 	c.addSubnets(refPrivateRT, api.SubnetTopologyPrivate, c.spec.VPC.Subnets.Private)
